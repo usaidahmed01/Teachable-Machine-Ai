@@ -2,7 +2,12 @@ from typing import Annotated, List
 
 from fastapi import APIRouter, File, Form, UploadFile
 
-from app.utils.file_utils import save_uploaded_images
+from app.ml_engine import predict_image, train_model
+from app.utils.file_utils import (
+    delete_class_dataset,
+    get_dataset_summary,
+    save_uploaded_images,
+)
 
 router = APIRouter()
 
@@ -32,5 +37,49 @@ async def upload_sample(
 
     return {
         "message": "Images uploaded successfully.",
+        "data": result
+    }
+
+
+@router.post("/train")
+def train():
+    result = train_model()
+
+    return {
+        "message": "Training completed successfully.",
+        "data": result
+    }
+
+
+@router.post("/predict")
+def predict(
+    file: Annotated[UploadFile, File(...)]
+):
+    result = predict_image(file)
+
+    return {
+        "message": "Prediction completed successfully.",
+        "data": result
+    }
+
+
+@router.get("/dataset-summary")
+def dataset_summary():
+    result = get_dataset_summary()
+
+    return {
+        "message": "Dataset summary fetched successfully.",
+        "data": result
+    }
+
+
+@router.delete("/delete-class")
+def delete_class(
+    class_name: Annotated[str, Form(...)]
+):
+    result = delete_class_dataset(class_name)
+
+    return {
+        "message": result["message"],
         "data": result
     }

@@ -1,0 +1,1697 @@
+import base64
+import io
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List
+
+import av
+import cv2
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
+from PIL import Image
+from streamlit_webrtc import VideoProcessorBase, WebRtcMode, webrtc_streamer
+
+
+API_BASE_URL = "http://127.0.0.1:8000"
+
+
+@dataclass
+class WebcamSampleProcessor(VideoProcessorBase):
+    is_recording: bool = False
+    capture_interval_seconds: float = 0.25
+    last_capture_time: float = 0.0
+    captured_frames: List[bytes] = field(default_factory=list)
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        image = frame.to_ndarray(format="bgr24")
+
+        if self.is_recording:
+            current_time = time.time()
+
+            if current_time - self.last_capture_time >= self.capture_interval_seconds:
+                self.last_capture_time = current_time
+
+                processed_image = self.prepare_sample_image(image)
+
+                success, encoded_image = cv2.imencode(
+                    ".jpg",
+                    processed_image,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 85],
+                )
+
+                if success:
+                    self.captured_frames.append(encoded_image.tobytes())
+
+        return av.VideoFrame.from_ndarray(image, format="bgr24")
+
+    @staticmethod
+    def prepare_sample_image(image: np.ndarray) -> np.ndarray:
+        height, width, _ = image.shape
+        crop_size = min(height, width)
+
+        start_x = (width - crop_size) // 2
+        start_y = (height - crop_size) // 2
+
+        cropped = image[start_y:start_y + crop_size, start_x:start_x + crop_size]
+        resized = cv2.resize(cropped, (224, 224))
+
+        return resized
+
+
+st.set_page_config(
+    page_title="Teachable Machine AI",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+
+def inject_custom_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: #f6f8f7;
+        }
+
+        header[data-testid="stHeader"] {
+            display: none;
+        }
+
+        section[data-testid="stSidebar"] {
+            display: none;
+        }
+
+        div[data-testid="column"] {
+            overflow: visible !important;
+        }
+
+        div[data-testid="stVerticalBlock"] {
+            overflow: visible !important;
+        }
+
+        .block-container {
+            padding-top: 1.2rem;
+            padding-left: 2rem;
+            padding-right: 2rem;
+            max-width: 1500px;
+        }
+
+        .tm-topbar {
+            background: #ffffff;
+            border-radius: 14px;
+            padding: 14px 22px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            box-shadow: none;
+            border: 1px solid #dadce0;
+            margin-bottom: 22px;
+            width: fit-content;
+            min-width: 340px;
+        }
+
+        .tm-menu-icon {
+            font-size: 26px;
+            line-height: 1;
+            color: #202124;
+        }
+
+        .tm-logo-text {
+            font-size: 26px;
+            font-weight: 800;
+            color: #1967d2;
+            letter-spacing: -0.5px;
+        }
+
+        .tm-class-card-pro {
+            border: 1px solid #eef0ef;
+            border-radius: 12px;
+            padding: 0;
+            overflow: visible;
+            background: linear-gradient(180deg, rgba(255,255,255,0.98), #fff);
+            box-shadow: 0 4px 12px rgba(20,20,20,0.03);
+            transition: box-shadow 0.2s ease;
+            margin-bottom: 14px;
+        }
+
+        .tm-class-card-pro:hover {
+            box-shadow: 0 8px 24px rgba(20,20,20,0.06);
+        }
+
+        .tm-class-card-disabled {
+            opacity: 0.58;
+            background: #f8f9fa;
+        }
+
+        .tm-card-divider-pro {
+            height: 1px;
+            background: #f3f4f3;
+            margin: 4px 0 14px 0;
+        }
+
+        .tm-edit-icon {
+            font-size: 16px;
+            color: #9aa0a6;
+            padding-top: 8px;
+            text-align: center;
+        }
+
+        .tm-disabled-message {
+            background: #f1f3f4;
+            color: #5f6368;
+            padding: 12px 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            margin: 0 16px 16px 16px;
+        }
+
+        .tm-sample-label {
+            margin-bottom: 8px;
+            color: #5f6368;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .tm-gallery-panel {
+            border-left: 1px solid #eef0ef;
+            padding-left: 16px;
+            min-height: 120px;
+        }
+
+        .tm-counter {
+            color: #5f6368;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .tm-empty-gallery {
+            background: #f8f9fa;
+            border: 1px dashed #dadce0;
+            color: #80868b;
+            border-radius: 8px;
+            padding: 16px;
+            font-size: 13px;
+            line-height: 1.4;
+            text-align: center;
+        }
+
+        .tm-gallery-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            max-height: 220px;
+            overflow-y: auto;
+            align-content: flex-start;
+        }
+
+        .tm-gallery-image {
+            width: 52px;
+            height: 52px;
+            object-fit: cover;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border: 1px solid #eef0ef;
+        }
+
+        .tm-gallery-grid::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .tm-gallery-grid::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .tm-gallery-grid::-webkit-scrollbar-thumb {
+            background: #dadce0;
+            border-radius: 4px;
+        }
+
+        .tm-gallery-grid::-webkit-scrollbar-thumb:hover {
+            background: #bdc1c6;
+        }
+
+        .tm-add-class-box {
+            border: 2px dashed #c4c7c5;
+            border-radius: 12px;
+            min-height: 74px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #5f6368;
+            font-size: 17px;
+            font-weight: 700;
+            background: rgba(255,255,255,0.65);
+            margin-top: 8px;
+            margin-bottom: 18px;
+            transition: all 0.2s ease;
+        }
+
+        .tm-add-class-box:hover {
+            background: #ffffff;
+            border-color: #8ab4f8;
+            color: #1967d2;
+        }
+
+        .tm-panel {
+            background: #ffffff;
+            border-radius: 12px;
+            border: 1px solid #eef0ef;
+            box-shadow: 0 8px 24px rgba(20,20,20,0.06);
+            overflow: hidden;
+            margin-bottom: 22px;
+        }
+
+        .tm-sticky-wrapper {
+            position: -webkit-sticky;
+            position: sticky;
+            top: 24px;
+            z-index: 50;
+            align-self: flex-start;
+        }
+
+        .tm-panel-header {
+            padding: 18px 20px;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 21px;
+            font-weight: 700;
+            color: #202124;
+        }
+
+        .tm-panel-body {
+            padding: 20px;
+        }
+
+        .tm-muted {
+            color: #5f6368;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .tm-connector {
+            height: 2px;
+            background: #c4c7c5;
+            margin-top: 145px;
+            position: relative;
+        }
+
+        .tm-connector:before {
+            content: "";
+            width: 13px;
+            height: 13px;
+            border-top: 2px solid #c4c7c5;
+            border-right: 2px solid #c4c7c5;
+            transform: rotate(45deg);
+            position: absolute;
+            right: -1px;
+            top: -6px;
+        }
+
+        .tm-status-success {
+            background: #e6f4ea;
+            color: #137333;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-weight: 600;
+            margin-top: 12px;
+            font-size: 14px;
+        }
+
+        .tm-status-error {
+            background: #fce8e6;
+            color: #c5221f;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-weight: 600;
+            margin-top: 12px;
+            font-size: 14px;
+        }
+
+        .tm-status-info {
+            background: #e8f0fe;
+            color: #1967d2;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-weight: 600;
+            margin-top: 12px;
+            font-size: 14px;
+        }
+
+        .tm-preview-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 18px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .tm-preview-title {
+            font-size: 21px;
+            font-weight: 800;
+            color: #202124;
+        }
+
+        .tm-export-button {
+            background: #e8f0fe;
+            color: #1967d2;
+            border-radius: 6px;
+            padding: 10px 14px;
+            font-size: 14px;
+            font-weight: 700;
+            text-align: center;
+            min-width: 145px;
+        }
+
+        .tm-input-control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+
+        .tm-input-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #5f6368;
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .tm-toggle-pill {
+            width: 36px;
+            height: 18px;
+            border-radius: 999px;
+            background: #9aa0a6;
+            position: relative;
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        .tm-toggle-pill::after {
+            content: "";
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #5f6368;
+            position: absolute;
+            right: 0;
+            top: 0;
+        }
+
+        .tm-toggle-pill-off {
+            background: #dadce0;
+        }
+
+        .tm-toggle-pill-off::after {
+            left: 0;
+            right: auto;
+            background: #9aa0a6;
+        }
+
+        .tm-mode-badge {
+            border: 2px solid #8ab4f8;
+            color: #5f6368;
+            border-radius: 999px;
+            padding: 8px 14px;
+            font-size: 14px;
+            font-weight: 700;
+            min-width: 110px;
+            text-align: center;
+            background: #ffffff;
+        }
+
+        .tm-file-drop-card {
+            background: #d2e3fc;
+            border-radius: 4px;
+            padding: 26px 18px;
+            text-align: center;
+            color: #1967d2;
+            font-weight: 700;
+            line-height: 1.35;
+            margin-bottom: 16px;
+            border: 1px solid #c6dafc;
+        }
+
+        .tm-drive-card {
+            background: #d2e3fc;
+            border-radius: 4px;
+            padding: 24px 18px;
+            text-align: center;
+            color: #1967d2;
+            font-weight: 700;
+            line-height: 1.35;
+            margin-bottom: 16px;
+            border: 1px solid #c6dafc;
+            opacity: 0.7;
+        }
+
+        .tm-output-divider {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 18px -20px 14px -20px;
+            position: relative;
+        }
+
+        .tm-output-divider::after {
+            content: "↓";
+            width: 24px;
+            height: 24px;
+            background: #dadce0;
+            color: #80868b;
+            border-radius: 50%;
+            position: absolute;
+            left: 50%;
+            top: -12px;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+        }
+
+        .tm-output-title {
+            color: #5f6368;
+            font-size: 18px;
+            font-weight: 800;
+            margin-bottom: 16px;
+        }
+
+        .tm-prediction-main {
+            background: #f8fafd;
+            border: 1px solid #d9e2f3;
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 16px;
+        }
+
+        .tm-prediction-label {
+            font-size: 13px;
+            color: #5f6368;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .tm-prediction-class {
+            font-size: 26px;
+            line-height: 1.2;
+            font-weight: 900;
+            color: #1967d2;
+        }
+
+        .tm-prediction-confidence {
+            font-size: 14px;
+            font-weight: 700;
+            color: #3c4043;
+            margin-top: 6px;
+        }
+
+        .tm-confidence-row {
+            display: grid;
+            grid-template-columns: 72px 1fr;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .tm-confidence-class {
+            font-size: 14px;
+            font-weight: 800;
+            color: #5f6368;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .tm-confidence-track {
+            height: 30px;
+            background: #fce8e6;
+            border-radius: 6px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .tm-confidence-fill {
+            height: 100%;
+            background: #ea4335;
+            border-radius: 6px;
+            min-width: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            color: #ffffff;
+            font-size: 12px;
+            font-weight: 800;
+            padding-right: 6px;
+        }
+
+        .tm-confidence-fill-top {
+            background: #f29900;
+        }
+
+        .tm-file-preview-image {
+            border-radius: 6px;
+            border: 1px solid #dadce0;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+
+        .tm-webcam-placeholder {
+            background: #f1f3f4;
+            border-radius: 8px;
+            border: 1px dashed #bdc1c6;
+            min-height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #5f6368;
+            font-weight: 700;
+            text-align: center;
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+
+        div.stButton > button {
+            width: 100%;
+            border-radius: 8px;
+            border: 1px solid #eef0ef;
+            background: #f8f9fa;
+            color: #1967d2;
+            font-weight: 700;
+            padding: 0.75rem 1rem;
+            white-space: pre-line;
+        }
+
+        div.stButton > button:hover {
+            background: #e8f0fe;
+            color: #174ea6;
+            border: 1px solid #d2e3fc;
+        }
+
+        div[data-testid="stFileUploader"] {
+            background: #f8fafd;
+            border-radius: 10px;
+            padding: 10px;
+            border: 1px solid #e0e7ff;
+        }
+
+        div[data-testid="stPopover"] button {
+            background: transparent;
+            color: #5f6368;
+            font-size: 20px;
+            border: none;
+            padding: 0.25rem;
+        }
+
+        div[data-testid="stTextInput"] input {
+            border: 1px solid transparent;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 700;
+            color: #202124;
+            padding: 6px 8px;
+            background: transparent;
+        }
+
+        div[data-testid="stTextInput"] input:hover {
+            border: 1px solid #eef0ef;
+            background: #f9f9f9;
+        }
+
+        div[data-testid="stTextInput"] input:focus {
+            border: 1px solid #8ab4f8;
+            background: #ffffff;
+            box-shadow: none;
+        }
+
+        @media (max-width: 1000px) {
+            .tm-topbar {
+                width: 100%;
+                min-width: unset;
+            }
+
+            .tm-connector {
+                display: none;
+            }
+
+            .tm-sticky-wrapper {
+                position: static;
+            }
+
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def initialize_session_state() -> None:
+    if "classes" not in st.session_state:
+        st.session_state.classes = [
+            {
+                "id": 1,
+                "name": "Class 1",
+                "uploaded_count": 0,
+                "enabled": True,
+                "ui_state": "idle",
+            },
+            {
+                "id": 2,
+                "name": "Class 2",
+                "uploaded_count": 0,
+                "enabled": True,
+                "ui_state": "idle",
+            },
+        ]
+
+    if "next_class_id" not in st.session_state:
+        st.session_state.next_class_id = 3
+
+    if "model_trained" not in st.session_state:
+        st.session_state.model_trained = False
+
+    if "training_result" not in st.session_state:
+        st.session_state.training_result = None
+
+    if "last_prediction" not in st.session_state:
+        st.session_state.last_prediction = None
+
+    if "dataset_summary" not in st.session_state:
+        st.session_state.dataset_summary = {}
+
+    if "preview_input_enabled" not in st.session_state:
+        st.session_state.preview_input_enabled = True
+
+    if "preview_mode" not in st.session_state:
+        st.session_state.preview_mode = "File"
+
+    if "sample_gallery" not in st.session_state:
+        st.session_state.sample_gallery = {}
+
+    if "active_camera_class_id" not in st.session_state:
+        st.session_state.active_camera_class_id = None
+
+
+def render_topbar() -> None:
+    st.markdown(
+        """
+        <div class="tm-topbar">
+            <div class="tm-menu-icon">☰</div>
+            <div class="tm-logo-text">Teachable Machine</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def show_status(message: str, status_type: str = "info") -> None:
+    css_class = {
+        "success": "tm-status-success",
+        "error": "tm-status-error",
+        "info": "tm-status-info",
+    }.get(status_type, "tm-status-info")
+
+    st.markdown(
+        f"<div class='{css_class}'>{message}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def upload_samples_to_backend(class_name: str, uploaded_files: List) -> Dict:
+    files_payload = []
+
+    for uploaded_file in uploaded_files:
+        file_bytes = uploaded_file.getvalue()
+        files_payload.append(
+            (
+                "files",
+                (
+                    uploaded_file.name,
+                    file_bytes,
+                    uploaded_file.type or "image/jpeg",
+                ),
+            )
+        )
+
+    response = requests.post(
+        f"{API_BASE_URL}/upload-sample",
+        data={"class_name": class_name},
+        files=files_payload,
+        timeout=120,
+    )
+
+    if response.status_code != 200:
+        error_message = response.json().get("detail", "Failed to upload samples.")
+        raise Exception(error_message)
+
+    return response.json()
+
+
+def upload_webcam_frames_to_backend(class_name: str, frame_bytes_list: List[bytes]) -> Dict:
+    files_payload = []
+
+    for index, frame_bytes in enumerate(frame_bytes_list):
+        files_payload.append(
+            (
+                "files",
+                (
+                    f"webcam_sample_{index + 1}.jpg",
+                    frame_bytes,
+                    "image/jpeg",
+                ),
+            )
+        )
+
+    response = requests.post(
+        f"{API_BASE_URL}/upload-sample",
+        data={"class_name": class_name},
+        files=files_payload,
+        timeout=180,
+    )
+
+    if response.status_code != 200:
+        error_message = response.json().get("detail", "Failed to upload webcam samples.")
+        raise Exception(error_message)
+
+    return response.json()
+
+
+def train_model_on_backend() -> Dict:
+    response = requests.post(
+        f"{API_BASE_URL}/train",
+        timeout=600,
+    )
+
+    if response.status_code != 200:
+        error_message = response.json().get("detail", "Training failed.")
+        raise Exception(error_message)
+
+    return response.json()
+
+
+def predict_image_on_backend(uploaded_file) -> Dict:
+    files_payload = {
+        "file": (
+            uploaded_file.name,
+            uploaded_file.getvalue(),
+            uploaded_file.type or "image/jpeg",
+        )
+    }
+
+    response = requests.post(
+        f"{API_BASE_URL}/predict",
+        files=files_payload,
+        timeout=180,
+    )
+
+    if response.status_code != 200:
+        error_message = response.json().get("detail", "Prediction failed.")
+        raise Exception(error_message)
+
+    return response.json()
+
+
+def get_dataset_summary_from_backend() -> Dict:
+    response = requests.get(
+        f"{API_BASE_URL}/dataset-summary",
+        timeout=60,
+    )
+
+    if response.status_code != 200:
+        error_message = response.json().get("detail", "Failed to fetch dataset summary.")
+        raise Exception(error_message)
+
+    return response.json()["data"]
+
+
+def delete_class_from_backend(class_name: str) -> Dict:
+    response = requests.delete(
+        f"{API_BASE_URL}/delete-class",
+        data={"class_name": class_name},
+        timeout=60,
+    )
+
+    if response.status_code != 200:
+        error_message = response.json().get("detail", "Failed to delete class.")
+        raise Exception(error_message)
+
+    return response.json()["data"]
+
+
+def get_real_uploaded_count(class_name: str, fallback_count: int = 0) -> int:
+    dataset_classes = st.session_state.dataset_summary.get("classes", {})
+
+    if class_name in dataset_classes:
+        return dataset_classes[class_name]
+
+    safe_name = class_name.replace(" ", "_")
+
+    if safe_name in dataset_classes:
+        return dataset_classes[safe_name]
+
+    return fallback_count
+
+
+def validate_classes_before_training() -> List[str]:
+    warnings = []
+
+    active_classes = [
+        class_item for class_item in st.session_state.classes
+        if class_item.get("enabled", True)
+    ]
+
+    if len(active_classes) < 2:
+        warnings.append("At least two enabled classes are required for training.")
+
+    seen_names = set()
+
+    for class_item in active_classes:
+        class_name = class_item["name"].strip()
+
+        if not class_name:
+            warnings.append("Every enabled class must have a valid name.")
+            continue
+
+        normalized_name = class_name.lower()
+
+        if normalized_name in seen_names:
+            warnings.append(f"Duplicate class name found: {class_name}")
+        else:
+            seen_names.add(normalized_name)
+
+        uploaded_count = get_real_uploaded_count(
+            class_name,
+            class_item.get("uploaded_count", 0)
+        )
+
+        if uploaded_count <= 0:
+            warnings.append(
+                f"Please upload image samples for '{class_name}' or disable/delete this class."
+            )
+
+    return warnings
+
+
+def add_new_class() -> None:
+    class_id = st.session_state.next_class_id
+
+    new_class = {
+        "id": class_id,
+        "name": f"Class {class_id}",
+        "uploaded_count": 0,
+        "enabled": True,
+        "ui_state": "idle",
+    }
+
+    st.session_state.classes.append(new_class)
+    st.session_state.sample_gallery[class_id] = []
+
+    st.session_state.next_class_id += 1
+    st.session_state.model_trained = False
+    st.session_state.training_result = None
+    st.session_state.last_prediction = None
+
+
+def handle_class_action(action: str, class_item: Dict, index: int) -> None:
+    class_id = class_item["id"]
+
+    if action == "disable":
+        st.session_state.classes[index]["enabled"] = False
+        st.session_state.classes[index]["ui_state"] = "idle"
+
+        if st.session_state.active_camera_class_id == class_id:
+            st.session_state.active_camera_class_id = None
+
+        st.session_state.model_trained = False
+        st.session_state.training_result = None
+        st.session_state.last_prediction = None
+        st.rerun()
+
+    if action == "enable":
+        st.session_state.classes[index]["enabled"] = True
+        st.session_state.classes[index]["ui_state"] = "idle"
+
+        st.session_state.model_trained = False
+        st.session_state.training_result = None
+        st.session_state.last_prediction = None
+        st.rerun()
+
+    if action == "delete":
+        try:
+            delete_class_from_backend(class_item["name"])
+        except Exception:
+            pass
+
+        if class_id in st.session_state.sample_gallery:
+            del st.session_state.sample_gallery[class_id]
+
+        if st.session_state.active_camera_class_id == class_id:
+            st.session_state.active_camera_class_id = None
+
+        st.session_state.classes.pop(index)
+
+        st.session_state.model_trained = False
+        st.session_state.training_result = None
+        st.session_state.last_prediction = None
+        st.rerun()
+
+
+def cache_uploaded_previews(class_id: int, uploaded_files: List) -> None:
+    if class_id not in st.session_state.sample_gallery:
+        st.session_state.sample_gallery[class_id] = []
+
+    for uploaded_file in uploaded_files:
+        try:
+            image = Image.open(uploaded_file).convert("RGB")
+            preview_buffer = io.BytesIO()
+            image.thumbnail((120, 120))
+            image.save(preview_buffer, format="JPEG")
+            st.session_state.sample_gallery[class_id].append(preview_buffer.getvalue())
+            uploaded_file.seek(0)
+        except Exception:
+            continue
+
+
+def cache_webcam_previews(class_id: int, frame_bytes_list: List[bytes]) -> None:
+    if class_id not in st.session_state.sample_gallery:
+        st.session_state.sample_gallery[class_id] = []
+
+    for frame_bytes in frame_bytes_list:
+        st.session_state.sample_gallery[class_id].append(frame_bytes)
+
+
+def render_sample_gallery(class_id: int, sample_count: int) -> None:
+    st.markdown(
+        f"""
+        <div class="tm-counter">
+            {sample_count} Image Sample{"s" if sample_count != 1 else ""}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    gallery_items = st.session_state.sample_gallery.get(class_id, [])
+
+    if not gallery_items:
+        st.markdown(
+            """
+            <div class="tm-empty-gallery">
+                Uploaded sample previews will appear here.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    image_html = ""
+
+    for image_bytes in gallery_items[-16:]:
+        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+        image_html += f"""
+        <img 
+            src="data:image/jpeg;base64,{encoded_image}" 
+            class="tm-gallery-image" 
+            alt="sample"
+        />
+        """
+
+    st.markdown(
+        f"""
+        <div class="tm-gallery-grid">
+            {image_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_webcam_capture_section(class_item: Dict, index: int, updated_name: str) -> None:
+    class_id = class_item["id"]
+
+    st.markdown(
+        """
+        <div class="tm-webcam-placeholder" style="min-height: 80px;">
+            Webcam is active. Use Start/Stop Recording to collect samples.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    webrtc_ctx = webrtc_streamer(
+        key=f"class_webcam_{class_id}",
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=WebcamSampleProcessor,
+        media_stream_constraints={
+            "video": True,
+            "audio": False,
+        },
+        async_processing=True,
+    )
+
+    processor = webrtc_ctx.video_processor
+
+    if processor:
+        current_count = len(processor.captured_frames)
+
+        st.markdown(
+            f"""
+            <div class="tm-counter">
+                Captured in current session: {current_count}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if st.button("Start Recording", key=f"start_recording_{class_id}", use_container_width=True):
+            processor.is_recording = True
+
+        if st.button("Stop Recording", key=f"stop_recording_{class_id}", use_container_width=True):
+            processor.is_recording = False
+
+        if st.button("Save Webcam Samples", key=f"save_webcam_{class_id}", use_container_width=True):
+            if not updated_name.strip():
+                show_status("Please enter a valid class name before saving webcam samples.", "error")
+            elif not processor.captured_frames:
+                show_status("No webcam samples captured yet. Start recording first.", "error")
+            else:
+                try:
+                    processor.is_recording = False
+
+                    with st.spinner(f"Uploading webcam samples for {updated_name}..."):
+                        result = upload_webcam_frames_to_backend(
+                            updated_name.strip(),
+                            processor.captured_frames,
+                        )
+
+                    saved_count = result["data"]["saved_count"]
+
+                    st.session_state.classes[index]["uploaded_count"] += saved_count
+                    cache_webcam_previews(class_id, processor.captured_frames)
+
+                    processor.captured_frames.clear()
+
+                    st.session_state.model_trained = False
+                    st.session_state.training_result = None
+                    st.session_state.last_prediction = None
+
+                    try:
+                        st.session_state.dataset_summary = get_dataset_summary_from_backend()
+                    except Exception:
+                        pass
+
+                    show_status(
+                        f"{saved_count} webcam sample(s) saved successfully for {updated_name}.",
+                        "success",
+                    )
+
+                    st.session_state.classes[index]["ui_state"] = "idle"
+                    st.rerun()
+
+                except requests.exceptions.ConnectionError:
+                    show_status(
+                        "Backend is not running. Start FastAPI using: uvicorn app.main:app --reload",
+                        "error",
+                    )
+                except Exception as error:
+                    show_status(str(error), "error")
+
+    close_clicked = st.button(
+        "Close Webcam",
+        key=f"close_webcam_{class_id}",
+        use_container_width=True,
+    )
+
+    if close_clicked:
+        st.session_state.classes[index]["ui_state"] = "idle"
+
+        if st.session_state.active_camera_class_id == class_id:
+            st.session_state.active_camera_class_id = None
+
+        st.rerun()
+
+
+def render_class_card(class_item: Dict, index: int) -> None:
+    class_id = class_item["id"]
+    is_enabled = class_item.get("enabled", True)
+    ui_state = class_item.get("ui_state", "idle")
+
+    disabled_class = "" if is_enabled else "tm-class-card-disabled"
+    status_label = "Enabled" if is_enabled else "Disabled"
+
+    real_count = get_real_uploaded_count(
+        class_item["name"],
+        class_item.get("uploaded_count", 0),
+    )
+
+    st.markdown(
+        f'<div class="tm-class-card-pro {disabled_class}">',
+        unsafe_allow_html=True,
+    )
+
+    header_col_1, header_col_2, header_col_3 = st.columns([7, 1, 1])
+
+    with header_col_1:
+        updated_name = st.text_input(
+            "Class name",
+            value=class_item["name"],
+            key=f"class_name_{class_id}",
+            label_visibility="collapsed",
+            placeholder="Enter class name",
+            disabled=not is_enabled,
+        )
+
+        if updated_name.strip() and updated_name != class_item["name"]:
+            st.session_state.classes[index]["name"] = updated_name.strip()
+            st.session_state.model_trained = False
+            st.session_state.training_result = None
+            st.session_state.last_prediction = None
+
+    with header_col_2:
+        st.markdown(
+            """
+            <div class="tm-edit-icon">✎</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with header_col_3:
+        with st.popover("⋮", use_container_width=True):
+            st.caption(f"Class status: {status_label}")
+
+            if is_enabled:
+                if st.button("Disable class", key=f"disable_{class_id}"):
+                    handle_class_action("disable", class_item, index)
+            else:
+                if st.button("Enable class", key=f"enable_{class_id}"):
+                    handle_class_action("enable", class_item, index)
+
+            if st.button("Delete class", key=f"delete_{class_id}", type="secondary"):
+                handle_class_action("delete", class_item, index)
+
+    st.markdown('<div class="tm-card-divider-pro"></div>', unsafe_allow_html=True)
+
+    if not is_enabled:
+        st.markdown(
+            """
+            <div class="tm-disabled-message">
+                This class is disabled and will be ignored during training.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    if ui_state == "camera_on":
+        render_webcam_capture_section(class_item, index, updated_name)
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    body_left, body_right = st.columns([1.05, 1.45])
+
+    with body_left:
+        st.markdown(
+            '<div class="tm-sample-label">Add Image Samples:</div>',
+            unsafe_allow_html=True,
+        )
+
+        if ui_state == "idle":
+            webcam_clicked = st.button(
+                "🎥 Webcam",
+                key=f"webcam_btn_{class_id}",
+                use_container_width=True,
+            )
+
+            upload_clicked_mode = st.button(
+                "⬆ Upload",
+                key=f"upload_btn_{class_id}",
+                use_container_width=True,
+            )
+
+            if webcam_clicked:
+                if st.session_state.active_camera_class_id not in [None, class_id]:
+                    show_status(
+                        "Another class webcam is active. Please close it before opening a new one.",
+                        "error",
+                    )
+                else:
+                    st.session_state.active_camera_class_id = class_id
+                    st.session_state.classes[index]["ui_state"] = "camera_on"
+                    st.rerun()
+
+            if upload_clicked_mode:
+                st.session_state.classes[index]["ui_state"] = "upload"
+                st.rerun()
+
+        if ui_state == "upload":
+            uploaded_files = st.file_uploader(
+                "Upload training images",
+                type=["jpg", "jpeg", "png", "webp"],
+                accept_multiple_files=True,
+                key=f"uploader_{class_id}",
+                label_visibility="collapsed",
+            )
+
+            upload_clicked = st.button(
+                "Save Samples",
+                key=f"save_uploads_{class_id}",
+                use_container_width=True,
+            )
+
+            cancel_clicked = st.button(
+                "Cancel",
+                key=f"cancel_upload_{class_id}",
+                use_container_width=True,
+            )
+
+            if cancel_clicked:
+                st.session_state.classes[index]["ui_state"] = "idle"
+                st.rerun()
+
+            if upload_clicked:
+                if not updated_name.strip():
+                    show_status("Please enter a valid class name before uploading.", "error")
+                elif not uploaded_files:
+                    show_status("Please select at least one image for this class.", "error")
+                else:
+                    try:
+                        with st.spinner(f"Uploading samples for {updated_name}..."):
+                            result = upload_samples_to_backend(
+                                updated_name.strip(),
+                                uploaded_files,
+                            )
+
+                        saved_count = result["data"]["saved_count"]
+
+                        st.session_state.classes[index]["uploaded_count"] += saved_count
+
+                        cache_uploaded_previews(class_id, uploaded_files)
+
+                        st.session_state.model_trained = False
+                        st.session_state.training_result = None
+                        st.session_state.last_prediction = None
+
+                        try:
+                            st.session_state.dataset_summary = get_dataset_summary_from_backend()
+                        except Exception:
+                            pass
+
+                        show_status(
+                            f"{saved_count} image sample(s) uploaded successfully for {updated_name}.",
+                            "success",
+                        )
+
+                        st.session_state.classes[index]["ui_state"] = "idle"
+                        st.rerun()
+
+                    except requests.exceptions.ConnectionError:
+                        show_status(
+                            "Backend is not running. Start FastAPI using: uvicorn app.main:app --reload",
+                            "error",
+                        )
+                    except Exception as error:
+                        show_status(str(error), "error")
+
+    with body_right:
+        st.markdown('<div class="tm-gallery-panel">', unsafe_allow_html=True)
+        render_sample_gallery(class_id, real_count)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_classes_area() -> None:
+    for index, class_item in enumerate(st.session_state.classes):
+        render_class_card(class_item, index)
+
+    st.markdown(
+        """
+        <div class="tm-add-class-box">
+            ⊞ Add a class
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("+ Add New Class"):
+        add_new_class()
+        st.rerun()
+
+
+def render_training_panel() -> None:
+    st.markdown('<div class="tm-sticky-wrapper">', unsafe_allow_html=True)
+    st.markdown('<div class="tm-panel">', unsafe_allow_html=True)
+    st.markdown('<div class="tm-panel-header">Training</div>', unsafe_allow_html=True)
+    st.markdown('<div class="tm-panel-body">', unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div class="tm-muted">
+            Upload samples for at least two enabled classes, then train your model.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    train_clicked = st.button("Train Model", key="train_model_button")
+
+    if train_clicked:
+        try:
+            try:
+                st.session_state.dataset_summary = get_dataset_summary_from_backend()
+            except Exception:
+                pass
+
+            validation_warnings = validate_classes_before_training()
+
+            if validation_warnings:
+                for warning in validation_warnings:
+                    show_status(warning, "error")
+                st.stop()
+
+            with st.spinner("Training model... This may take a moment."):
+                result = train_model_on_backend()
+
+            st.session_state.model_trained = True
+            st.session_state.training_result = result["data"]
+            st.session_state.last_prediction = None
+
+            show_status("Model trained successfully. Preview is now unlocked.", "success")
+
+        except requests.exceptions.ConnectionError:
+            show_status(
+                "Backend is not running. Start FastAPI using: uvicorn app.main:app --reload",
+                "error",
+            )
+        except Exception as error:
+            st.session_state.model_trained = False
+            show_status(str(error), "error")
+
+    if st.session_state.training_result:
+        training_data = st.session_state.training_result
+
+        st.markdown("### Training Result")
+        st.write(f"**Accuracy:** {training_data.get('accuracy_percentage', 0)}%")
+        st.write(f"**Total Images:** {training_data.get('total_images', 0)}")
+        st.write(f"**Device:** {training_data.get('device', 'cpu')}")
+        st.write(f"**Classes:** {', '.join(training_data.get('classes', []))}")
+
+        class_distribution = training_data.get("class_distribution", {})
+
+        if class_distribution:
+            st.dataframe(
+                pd.DataFrame(
+                    list(class_distribution.items()),
+                    columns=["Class", "Images"],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.markdown(
+            """
+            <div class="tm-muted" style="margin-top: 14px;">
+                Advanced settings can be added later.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        show_status("Model is not trained yet. Preview will unlock after training.", "info")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_probability_bars(probabilities: Dict[str, float]) -> None:
+    sorted_probabilities = dict(
+        sorted(
+            probabilities.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    )
+
+    top_class = next(iter(sorted_probabilities), None)
+
+    for class_name, score in sorted_probabilities.items():
+        safe_width = max(2, min(float(score), 100))
+        top_class_style = "tm-confidence-fill-top" if class_name == top_class else ""
+
+        st.markdown(
+            f"""
+            <div class="tm-confidence-row">
+                <div class="tm-confidence-class">{class_name}</div>
+                <div class="tm-confidence-track">
+                    <div class="tm-confidence-fill {top_class_style}" style="width: {safe_width}%;">
+                        {score}%
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_preview_header() -> None:
+    st.markdown(
+        """
+        <div class="tm-preview-header-row">
+            <div class="tm-preview-title">Preview</div>
+            <div class="tm-export-button">⬆ &nbsp; Export Model</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_preview_input_controls() -> None:
+    toggle_class = "" if st.session_state.preview_input_enabled else "tm-toggle-pill-off"
+    mode_label = st.session_state.preview_mode
+
+    st.markdown(
+        f"""
+        <div class="tm-input-control-row">
+            <div class="tm-input-left">
+                <span>Input</span>
+                <span class="tm-toggle-pill {toggle_class}"></span>
+                <span>{"ON" if st.session_state.preview_input_enabled else "OFF"}</span>
+            </div>
+            <div class="tm-mode-badge">{mode_label} ▼</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    input_enabled = st.toggle(
+        "Input Enabled",
+        value=st.session_state.preview_input_enabled,
+        key="preview_input_toggle",
+    )
+
+    selected_mode = st.selectbox(
+        "Input Mode",
+        ["File", "Webcam"],
+        index=0 if st.session_state.preview_mode == "File" else 1,
+        key="preview_mode_select",
+    )
+
+    st.session_state.preview_input_enabled = input_enabled
+    st.session_state.preview_mode = selected_mode
+
+
+def render_preview_panel() -> None:
+    st.markdown('<div class="tm-sticky-wrapper">', unsafe_allow_html=True)
+    st.markdown('<div class="tm-panel">', unsafe_allow_html=True)
+
+    render_preview_header()
+
+    st.markdown('<div class="tm-panel-body">', unsafe_allow_html=True)
+
+    if not st.session_state.model_trained:
+        st.markdown(
+            """
+            <div class="tm-muted">
+                You must train a model on the left before you can preview it here.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    render_preview_input_controls()
+
+    if not st.session_state.preview_input_enabled:
+        show_status("Preview input is currently OFF. Turn it ON to test predictions.", "info")
+
+        st.markdown('<div class="tm-output-divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="tm-output-title">Output</div>', unsafe_allow_html=True)
+
+        if st.session_state.last_prediction:
+            render_probability_bars(st.session_state.last_prediction["probabilities"])
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    test_image = None
+
+    if st.session_state.preview_mode == "File":
+        st.markdown(
+            """
+            <div class="tm-file-drop-card">
+                ▣<br>
+                Choose images from your files,<br>
+                or drag & drop here
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        test_image = st.file_uploader(
+            "Choose images from your files",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="prediction_uploader",
+            label_visibility="collapsed",
+        )
+
+        st.markdown(
+            """
+            <div class="tm-drive-card">
+                Google Drive import can be added later
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if test_image:
+            image = Image.open(test_image).convert("RGB")
+            st.markdown('<div class="tm-file-preview-image">', unsafe_allow_html=True)
+            st.image(image, caption="Selected Input Image", use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        predict_clicked = st.button("Predict Image", key="predict_button")
+
+        if predict_clicked:
+            if not test_image:
+                show_status("Please upload a test image first.", "error")
+            else:
+                try:
+                    with st.spinner("Predicting image..."):
+                        result = predict_image_on_backend(test_image)
+
+                    st.session_state.last_prediction = result["data"]
+
+                except requests.exceptions.ConnectionError:
+                    show_status(
+                        "Backend is not running. Start FastAPI using: uvicorn app.main:app --reload",
+                        "error",
+                    )
+                except Exception as error:
+                    show_status(str(error), "error")
+
+    else:
+        st.markdown(
+            """
+            <div class="tm-webcam-placeholder">
+                Webcam live preview will be added in Step 4E.<br>
+                For now, use File mode to test prediction.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        show_status(
+            "Webcam sample capture is now added in class cards. Live prediction webcam will be added next.",
+            "info",
+        )
+
+    st.markdown('<div class="tm-output-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="tm-output-title">Output</div>', unsafe_allow_html=True)
+
+    if st.session_state.last_prediction:
+        prediction = st.session_state.last_prediction
+
+        st.markdown(
+            f"""
+            <div class="tm-prediction-main">
+                <div class="tm-prediction-label">Predicted Class</div>
+                <div class="tm-prediction-class">{prediction["predicted_class"]}</div>
+                <div class="tm-prediction-confidence">Confidence: {prediction["confidence"]}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        render_probability_bars(prediction["probabilities"])
+
+        with st.expander("Model Info"):
+            st.write(f"**Model Accuracy:** {prediction.get('model_accuracy', 0)}%")
+            st.write(f"**Feature Extractor:** {prediction.get('feature_extractor', 'MobileNetV3')}")
+            st.write(
+                f"**Image Size:** {prediction.get('image_size', 224)} x {prediction.get('image_size', 224)}"
+            )
+    else:
+        st.markdown(
+            """
+            <div class="tm-muted">
+                Prediction output will appear here after you provide an input image.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def main() -> None:
+    inject_custom_css()
+    initialize_session_state()
+
+    try:
+        st.session_state.dataset_summary = get_dataset_summary_from_backend()
+    except Exception:
+        pass
+
+    render_topbar()
+
+    left_column, connector_column, middle_column, connector_column_2, right_column = st.columns(
+        [4.8, 0.35, 1.8, 0.35, 2.5]
+    )
+
+    with left_column:
+        render_classes_area()
+
+    with connector_column:
+        st.markdown('<div class="tm-connector"></div>', unsafe_allow_html=True)
+
+    with middle_column:
+        render_training_panel()
+
+    with connector_column_2:
+        st.markdown('<div class="tm-connector"></div>', unsafe_allow_html=True)
+
+    with right_column:
+        render_preview_panel()
+
+
+if __name__ == "__main__":
+    main()

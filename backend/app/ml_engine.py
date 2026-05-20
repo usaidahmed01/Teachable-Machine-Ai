@@ -25,9 +25,6 @@ from app.core.config import (
 
 
 def get_device() -> torch.device:
-    """
-    Select GPU if available, otherwise use CPU.
-    """
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -264,4 +261,89 @@ def train_model() -> Dict:
         "class_distribution": class_distribution,
         "total_images": int(len(labels)),
         "device": str(device),
+    }
+
+
+def load_trained_model_package() -> Dict:
+    """
+    Load the saved model package from model.pkl.
+    This package contains the classifier, label encoder, class names, and metadata.
+    """
+    if not MODEL_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Trained model not found. Please train the model first."
+        )
+
+    try:
+        model_package = joblib.load(MODEL_PATH)
+        return model_package
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load trained model. Please retrain the model."
+        )
+
+
+def predict_image(image_file) -> Dict:
+    """
+    Predict the class of a single uploaded image.
+    The image goes through the same preprocessing and feature extraction pipeline
+    used during training.
+    """
+    model_package = load_trained_model_package()
+
+    classifier = model_package["classifier"]
+    label_encoder = model_package["label_encoder"]
+    class_names = model_package["class_names"]
+
+    device = get_device()
+    transform = get_preprocessing_transform()
+    feature_extractor = load_feature_extractor(device)
+
+    try:
+        image = Image.open(image_file.file).convert("RGB")
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is not a valid image."
+        )
+
+    image_tensor = transform(image)
+
+    image_features = extract_features_for_image(
+        image_tensor=image_tensor,
+        feature_extractor=feature_extractor,
+        device=device
+    )
+
+    image_features = image_features.reshape(1, -1)
+
+    predicted_label_index = classifier.predict(image_features)[0]
+    predicted_class = label_encoder.inverse_transform([predicted_label_index])[0]
+
+    if hasattr(classifier, "predict_proba"):
+        probabilities = classifier.predict_proba(image_features)[0]
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="The trained classifier does not support probability prediction."
+        )
+
+    probability_dict = {
+        class_name: round(float(probability) * 100, 2)
+        for class_name, probability in zip(class_names, probabilities)
+    }
+
+    confidence = probability_dict[predicted_class]
+
+    return {
+        "predicted_class": predicted_class,
+        "confidence": confidence,
+        "probabilities": probability_dict,
+        "model_accuracy": round(float(model_package.get("accuracy", 0)) * 100, 2),
+        "trained_classes": class_names,
+        "feature_extractor": model_package.get("feature_extractor", "mobilenet_v3_small"),
+        "image_size": model_package.get("image_size", IMAGE_SIZE),
     }

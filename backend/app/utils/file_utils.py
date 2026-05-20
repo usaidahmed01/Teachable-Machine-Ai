@@ -6,6 +6,8 @@ from typing import List
 from fastapi import UploadFile, HTTPException
 from PIL import Image
 
+import shutil
+
 from app.core.config import (
     ALLOWED_IMAGE_EXTENSIONS,
     DATASET_DIR,
@@ -105,4 +107,70 @@ async def save_uploaded_images(class_name: str, files: List[UploadFile]) -> dict
         "saved_count": len(saved_files),
         "saved_files": saved_files,
         "folder_path": str(class_folder)
+    }
+
+
+
+
+def get_dataset_summary() -> dict:
+    """
+    Return a summary of all class folders and image counts inside the dataset directory.
+    Purpose:
+    The frontend can use this to know how many images exist in each class folder.
+    This is better than only relying on Streamlit session state.
+    """
+    DATASET_DIR.mkdir(parents=True, exist_ok=True)
+
+    summary = {}
+
+    for class_folder in DATASET_DIR.iterdir():
+        if not class_folder.is_dir():
+            continue
+
+        image_count = 0
+
+        for image_path in class_folder.iterdir():
+            if (
+                image_path.is_file()
+                and image_path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+            ):
+                image_count += 1
+
+        summary[class_folder.name] = image_count
+
+    return {
+        "classes": summary,
+        "total_classes": len(summary),
+        "total_images": sum(summary.values())
+    }
+
+
+def delete_class_dataset(class_name: str) -> dict:
+    """
+    Delete a class folder from the dataset directory.
+    Purpose:
+    When the user deletes a class from the UI, the backend dataset should also be cleaned.
+    """
+    safe_class_name = sanitize_class_name(class_name)
+    class_folder = DATASET_DIR / safe_class_name
+
+    if not class_folder.exists():
+        return {
+            "class_name": safe_class_name,
+            "deleted": False,
+            "message": "Class folder does not exist."
+        }
+
+    if not class_folder.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid class path."
+        )
+
+    shutil.rmtree(class_folder)
+
+    return {
+        "class_name": safe_class_name,
+        "deleted": True,
+        "message": "Class dataset deleted successfully."
     }
