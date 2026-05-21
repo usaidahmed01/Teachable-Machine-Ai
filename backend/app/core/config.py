@@ -6,6 +6,9 @@ DATASET_DIR = BASE_DIR / "dataset"
 MODELS_DIR = BASE_DIR / "models"
 MODEL_PATH = MODELS_DIR / "model.pkl"
 
+SESSIONS_DIR = BASE_DIR / "sessions"
+SESSION_TTL_MINUTES = 60
+
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 MAX_IMAGE_SIZE_MB = 10

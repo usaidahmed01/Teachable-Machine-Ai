@@ -22,6 +22,7 @@ from app.core.config import (
     RANDOM_STATE,
     TEST_SIZE,
 )
+from app.utils.session_utils import get_session_dataset_dir, get_session_model_path
 
 
 def get_device() -> torch.device:
@@ -58,18 +59,20 @@ def load_feature_extractor(device: torch.device):
     return model
 
 
-def get_class_folders() -> List[Path]:
+def get_class_folders(session_id: str) -> List[Path]:
     """
     Return all valid class folders inside the dataset directory.
     """
-    if not DATASET_DIR.exists():
+    dataset_dir = get_session_dataset_dir(session_id)
+
+    if not dataset_dir.exists():
         raise HTTPException(
             status_code=400,
             detail="Dataset folder does not exist. Please upload images first."
         )
 
     class_folders = [
-        folder for folder in DATASET_DIR.iterdir()
+        folder for folder in dataset_dir.iterdir()
         if folder.is_dir()
     ]
 
@@ -182,13 +185,13 @@ def build_feature_dataset(
     return np.array(features), np.array(labels)
 
 
-def train_model() -> Dict:
+def train_model(session_id: str) -> Dict:
     """
     Main training function.
     It scans the dataset, extracts MobileNetV3 features,
     trains Logistic Regression, saves model.pkl, and returns metrics.
     """
-    class_folders = get_class_folders()
+    class_folders = get_class_folders(session_id)
     class_distribution = validate_dataset(class_folders)
 
     device = get_device()
@@ -237,7 +240,8 @@ def train_model() -> Dict:
     y_pred = classifier.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
 
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    session_model_path = get_session_model_path(session_id)
+    session_model_path.parent.mkdir(parents=True, exist_ok=True)
 
     model_package = {
         "classifier": classifier,
@@ -250,11 +254,11 @@ def train_model() -> Dict:
         "total_images": int(len(labels)),
     }
 
-    joblib.dump(model_package, MODEL_PATH)
+    joblib.dump(model_package, session_model_path)
 
     return {
         "message": "Model trained successfully.",
-        "model_path": str(MODEL_PATH),
+        "model_path": str(session_model_path),
         "accuracy": round(float(accuracy), 4),
         "accuracy_percentage": round(float(accuracy) * 100, 2),
         "classes": list(label_encoder.classes_),
@@ -264,19 +268,21 @@ def train_model() -> Dict:
     }
 
 
-def load_trained_model_package() -> Dict:
+def load_trained_model_package(session_id: str) -> Dict:
     """
     Load the saved model package from model.pkl.
     This package contains the classifier, label encoder, class names, and metadata.
     """
-    if not MODEL_PATH.exists():
+    session_model_path = get_session_model_path(session_id)
+
+    if not session_model_path.exists():
         raise HTTPException(
             status_code=404,
             detail="Trained model not found. Please train the model first."
         )
 
     try:
-        model_package = joblib.load(MODEL_PATH)
+        model_package = joblib.load(session_model_path)
         return model_package
 
     except Exception:
@@ -286,13 +292,13 @@ def load_trained_model_package() -> Dict:
         )
 
 
-def predict_image(image_file) -> Dict:
+def predict_image(session_id: str, image_file) -> Dict:
     """
     Predict the class of a single uploaded image.
     The image goes through the same preprocessing and feature extraction pipeline
     used during training.
     """
-    model_package = load_trained_model_package()
+    model_package = load_trained_model_package(session_id)
 
     classifier = model_package["classifier"]
     label_encoder = model_package["label_encoder"]

@@ -8,6 +8,8 @@ from PIL import Image
 
 import shutil
 
+from app.utils.session_utils import get_session_dataset_dir
+
 from app.core.config import (
     ALLOWED_IMAGE_EXTENSIONS,
     DATASET_DIR,
@@ -74,7 +76,7 @@ def verify_image_file(file_path: Path) -> None:
         )
 
 
-async def save_uploaded_images(class_name: str, files: List[UploadFile]) -> dict:
+async def save_uploaded_images(session_id: str, class_name: str, files: List[UploadFile]) -> dict:
     safe_class_name = sanitize_class_name(class_name)
 
     if not files:
@@ -83,7 +85,8 @@ async def save_uploaded_images(class_name: str, files: List[UploadFile]) -> dict
             detail="Please upload at least one image."
         )
 
-    class_folder = DATASET_DIR / safe_class_name
+    session_dataset_dir = get_session_dataset_dir(session_id)
+    class_folder = session_dataset_dir / safe_class_name
     class_folder.mkdir(parents=True, exist_ok=True)
 
     saved_files = []
@@ -112,18 +115,19 @@ async def save_uploaded_images(class_name: str, files: List[UploadFile]) -> dict
 
 
 
-def get_dataset_summary() -> dict:
+def get_dataset_summary(session_id: str) -> dict:
     """
     Return a summary of all class folders and image counts inside the dataset directory.
     Purpose:
     The frontend can use this to know how many images exist in each class folder.
     This is better than only relying on Streamlit session state.
     """
-    DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    # DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    session_dataset_dir = get_session_dataset_dir(session_id)
 
     summary = {}
 
-    for class_folder in DATASET_DIR.iterdir():
+    for class_folder in session_dataset_dir.iterdir():
         if not class_folder.is_dir():
             continue
 
@@ -145,14 +149,15 @@ def get_dataset_summary() -> dict:
     }
 
 
-def delete_class_dataset(class_name: str) -> dict:
+def delete_class_dataset(session_id: str, class_name: str) -> dict:
     """
     Delete a class folder from the dataset directory.
     Purpose:
     When the user deletes a class from the UI, the backend dataset should also be cleaned.
     """
     safe_class_name = sanitize_class_name(class_name)
-    class_folder = DATASET_DIR / safe_class_name
+    session_dataset_dir = get_session_dataset_dir(session_id)
+    class_folder = session_dataset_dir / safe_class_name
 
     if not class_folder.exists():
         return {

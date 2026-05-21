@@ -8,6 +8,7 @@ from app.utils.file_utils import (
     get_dataset_summary,
     save_uploaded_images,
 )
+from app.utils.session_utils import cleanup_old_sessions, delete_session_data
 
 router = APIRouter()
 
@@ -30,10 +31,11 @@ def health_check():
 
 @router.post("/upload-sample")
 async def upload_sample(
+    session_id: Annotated[str, Form(...)],
     class_name: Annotated[str, Form(...)],
     files: Annotated[List[UploadFile], File(...)]
 ):
-    result = await save_uploaded_images(class_name, files)
+    result = await save_uploaded_images(session_id, class_name, files)
 
     return {
         "message": "Images uploaded successfully.",
@@ -42,8 +44,8 @@ async def upload_sample(
 
 
 @router.post("/train")
-def train():
-    result = train_model()
+def train(session_id: Annotated[str, Form(...)]):
+    result = train_model(session_id)
 
     return {
         "message": "Training completed successfully.",
@@ -53,9 +55,10 @@ def train():
 
 @router.post("/predict")
 def predict(
+    session_id: Annotated[str, Form(...)],
     file: Annotated[UploadFile, File(...)]
 ):
-    result = predict_image(file)
+    result = predict_image(session_id, file)
 
     return {
         "message": "Prediction completed successfully.",
@@ -64,8 +67,8 @@ def predict(
 
 
 @router.get("/dataset-summary")
-def dataset_summary():
-    result = get_dataset_summary()
+def dataset_summary(session_id: str):
+    result = get_dataset_summary(session_id)
 
     return {
         "message": "Dataset summary fetched successfully.",
@@ -75,11 +78,32 @@ def dataset_summary():
 
 @router.delete("/delete-class")
 def delete_class(
+    session_id: Annotated[str, Form(...)],
     class_name: Annotated[str, Form(...)]
 ):
-    result = delete_class_dataset(class_name)
+    result = delete_class_dataset(session_id, class_name)
 
     return {
         "message": result["message"],
+        "data": result
+    }
+
+
+@router.delete("/reset-session")
+def reset_session(session_id: Annotated[str, Form(...)]):
+    result = delete_session_data(session_id)
+
+    return {
+        "message": "Session data deleted successfully.",
+        "data": result
+    }
+
+
+@router.post("/cleanup-old-sessions")
+def cleanup_sessions():
+    result = cleanup_old_sessions()
+
+    return {
+        "message": "Old sessions cleaned successfully.",
         "data": result
     }
