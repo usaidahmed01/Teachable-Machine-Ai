@@ -1,6 +1,6 @@
 from typing import Annotated, List
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.ml_engine import predict_image, train_model
 from app.utils.file_utils import (
@@ -8,7 +8,12 @@ from app.utils.file_utils import (
     get_dataset_summary,
     save_uploaded_images,
 )
-from app.utils.session_utils import cleanup_old_sessions, delete_session_data
+from app.utils.session_utils import (
+    cleanup_old_sessions,
+    delete_session_data,
+    get_session_model_path,
+)
+from fastapi.responses import FileResponse
 
 router = APIRouter()
 
@@ -107,3 +112,20 @@ def cleanup_sessions():
         "message": "Old sessions cleaned successfully.",
         "data": result
     }
+
+
+@router.get("/export-model")
+def export_model(session_id: str):
+    model_path = get_session_model_path(session_id)
+
+    if not model_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Trained model not found. Please train the model before exporting."
+        )
+
+    return FileResponse(
+        path=model_path,
+        filename="teachable_machine_model.pkl",
+        media_type="application/octet-stream",
+    )
