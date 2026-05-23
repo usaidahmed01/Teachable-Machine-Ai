@@ -2,7 +2,7 @@ from typing import Annotated, List
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.ml_engine import predict_image, train_model
+from app.ml_engine import clear_model_cache, predict_image, train_model
 from app.utils.file_utils import (
     delete_class_dataset,
     get_dataset_summary,
@@ -96,6 +96,7 @@ def delete_class(
 
 @router.delete("/reset-session")
 def reset_session(session_id: Annotated[str, Form(...)]):
+    clear_model_cache(session_id)
     result = delete_session_data(session_id)
 
     return {

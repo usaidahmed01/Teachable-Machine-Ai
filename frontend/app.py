@@ -1613,17 +1613,105 @@ def render_training_panel() -> None:
 
     if st.session_state.training_result:
         training_data = st.session_state.training_result
+        evaluation_metrics = training_data.get("evaluation_metrics", {})
+        dataset_warnings = training_data.get("dataset_warnings", [])
 
         st.markdown(
             f"""
             <div class="tm-status-success">
-                Model ready. Accuracy: {training_data.get("accuracy_percentage", 0)}% 
+                Model ready. Accuracy: {training_data.get("accuracy_percentage", 0)}%
                 • Classes: {len(training_data.get("classes", []))}
                 • Images: {training_data.get("total_images", 0)}
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        if dataset_warnings:
+            with st.expander("Dataset Quality Warnings"):
+                for warning in dataset_warnings:
+                    st.warning(warning)
+
+        if evaluation_metrics:
+            with st.expander("Model Evaluation Metrics"):
+                macro_average = evaluation_metrics.get("macro_average", {})
+                weighted_average = evaluation_metrics.get("weighted_average", {})
+
+                st.markdown("#### Overall Evaluation")
+
+                st.write(
+                    f"**Macro Precision:** {macro_average.get('precision', 0)}%  "
+                    f"**Macro Recall:** {macro_average.get('recall', 0)}%  "
+                    f"**Macro F1-score:** {macro_average.get('f1_score', 0)}%"
+                )
+
+                st.write(
+                    f"**Weighted Precision:** {weighted_average.get('precision', 0)}%  "
+                    f"**Weighted Recall:** {weighted_average.get('recall', 0)}%  "
+                    f"**Weighted F1-score:** {weighted_average.get('f1_score', 0)}%"
+                )
+
+                per_class_metrics = evaluation_metrics.get("per_class_metrics", {})
+                per_class_accuracy = evaluation_metrics.get("per_class_accuracy", {})
+
+                if per_class_metrics:
+                    st.markdown("#### Per-Class Metrics")
+
+                    metric_rows = []
+
+                    for class_name, metrics in per_class_metrics.items():
+                        metric_rows.append(
+                            {
+                                "Class": class_name,
+                                "Accuracy (%)": per_class_accuracy.get(class_name, 0),
+                                "Precision (%)": metrics.get("precision", 0),
+                                "Recall (%)": metrics.get("recall", 0),
+                                "F1-score (%)": metrics.get("f1_score", 0),
+                                "Test Samples": metrics.get("support", 0),
+                            }
+                        )
+
+                    st.dataframe(metric_rows, use_container_width=True)
+
+                confusion_matrix_values = evaluation_metrics.get("confusion_matrix", [])
+                confusion_matrix_labels = evaluation_metrics.get("confusion_matrix_labels", [])
+
+                if confusion_matrix_values and confusion_matrix_labels:
+                    st.markdown("#### Confusion Matrix")
+                    st.caption("Rows = Actual class, Columns = Predicted class")
+
+                    confusion_rows = []
+
+                    for row_index, row_values in enumerate(confusion_matrix_values):
+                        row_data = {"Actual \\ Predicted": confusion_matrix_labels[row_index]}
+
+                        for column_index, value in enumerate(row_values):
+                            row_data[confusion_matrix_labels[column_index]] = value
+
+                        confusion_rows.append(row_data)
+
+                    st.dataframe(confusion_rows, use_container_width=True)
+
+                sample_examples = evaluation_metrics.get("sample_prediction_examples", [])
+
+                if sample_examples:
+                    st.markdown("#### Sample Prediction Examples")
+
+                    example_rows = []
+
+                    for example in sample_examples:
+                        example_rows.append(
+                            {
+                                "File": example.get("file_name", ""),
+                                "Actual": example.get("actual_class", ""),
+                                "Predicted": example.get("predicted_class", ""),
+                                "Confidence (%)": example.get("confidence", 0),
+                                "Correct": "Yes" if example.get("is_correct", False) else "No",
+                            }
+                        )
+
+                    st.dataframe(example_rows, use_container_width=True)
+
     else:
         show_status("Model is not trained yet. Preview will unlock after training.", "info")
 
@@ -1639,7 +1727,7 @@ def render_training_panel() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
+    
 
 def render_probability_bars(probabilities: Dict[str, float]) -> None:
     sorted_probabilities = dict(
@@ -1819,7 +1907,8 @@ def render_preview_panel() -> None:
         st.markdown('<div class="tm-output-title">Output</div>', unsafe_allow_html=True)
 
         if st.session_state.last_prediction:
-            render_probability_bars(st.session_state.last_prediction["probabilities"])
+            prediction = st.session_state.last_prediction
+            render_probability_bars(prediction["probabilities"])
 
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1870,12 +1959,34 @@ def render_preview_panel() -> None:
     if st.session_state.last_prediction:
         prediction = st.session_state.last_prediction
 
+        is_uncertain = prediction.get("is_uncertain", False)
+        best_match = prediction.get("best_match", prediction.get("predicted_class", "Unknown"))
+        predicted_class = prediction.get("predicted_class", "Unknown")
+        confidence = prediction.get("confidence", 0)
+        confidence_threshold = prediction.get("confidence_threshold", 60)
+
+        if is_uncertain:
+            prediction_label = f"Best match: {best_match}"
+            prediction_title = "Uncertain"
+            prediction_message = (
+                "The model found a possible match, but the confidence is below the required threshold."
+            )
+        else:
+            prediction_label = "Predicted Class"
+            prediction_title = predicted_class
+            prediction_message = "The model is confident enough to return this class."
+
         st.markdown(
             f"""
             <div class="tm-prediction-main">
-                <div class="tm-prediction-label">Predicted Class</div>
-                <div class="tm-prediction-class">{prediction["predicted_class"]}</div>
-                <div class="tm-prediction-confidence">Confidence: {prediction["confidence"]}%</div>
+                <div class="tm-prediction-label">{prediction_label}</div>
+                <div class="tm-prediction-class">{prediction_title}</div>
+                <div class="tm-prediction-confidence">
+                    Confidence: {confidence}% • Threshold: {confidence_threshold}%
+                </div>
+                <div class="tm-muted" style="margin-top: 8px;">
+                    {prediction_message}
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1889,6 +2000,15 @@ def render_preview_panel() -> None:
             st.write(
                 f"**Image Size:** {prediction.get('image_size', 224)} x {prediction.get('image_size', 224)}"
             )
+
+            if is_uncertain:
+                st.write(f"**Best Match:** {best_match}")
+                st.write(f"**Prediction Status:** Uncertain")
+            else:
+                st.write(f"**Prediction Status:** Confident")
+
+            st.write(f"**Confidence Threshold:** {confidence_threshold}%")
+
     else:
         st.markdown(
             """
@@ -1902,7 +2022,6 @@ def render_preview_panel() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
 
 
 def reset_frontend_project_state() -> None:
